@@ -1,0 +1,10 @@
+# Ignorar arquivos de configuração com credenciais reais
+config.env
+
+# Ignorar chaves privadas
+*.pem
+
+# Ignorar arquivos de sistema e cache Python
+.DS_Store
+__pycache__/
+*.pyc
