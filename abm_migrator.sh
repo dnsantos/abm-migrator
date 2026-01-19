@@ -1,4 +1,3 @@
-bash
 #!/bin/bash
 
 # ==============================================================================
@@ -56,7 +55,8 @@ show_help() {
     echo ""
     echo "  check [SERIAL]               Consulta status e MDM atual do dispositivo."
     echo "  list                         Lista servidores MDM e seus IDs."
-    echo "  batch [ARQUIVO] [ID_MDM]     Migra seriais de um .txt para o MDM de destino."
+    echo "  batch [ARQUIVO] [ID_MDM]     Migra uma LISTA (.txt) para o MDM de destino."
+    echo "  batch [SERIAL] [ID_MDM]      Migra um SERIAL ÚNICO para o MDM de destino."
     echo "  help                         Exibe esta ajuda."
     echo "=============================================================================="
 }
@@ -168,31 +168,87 @@ if [ "$MODE" == "list" ]; then
 fi
 
 if [ "$MODE" == "batch" ]; then
-    if [ ! -f "$INPUT" ] || [ -z "$TARGET_ARG" ]; then
-        echo -e "${RED}Uso: $0 batch [ARQUIVO] [ID_MDM]${NC}"
+    # Valida se os argumentos foram passados
+    if [ -z "$INPUT" ] || [ -z "$TARGET_ARG" ]; then
+        echo -e "${RED}Uso: $0 batch [ARQUIVO_OU_SERIAL] [ID_MDM]${NC}"
         exit 1
     fi
 
     export P_TARGET="$TARGET_ARG"
-    export P_FILE="$INPUT"
 
+    # 🧠 LÓGICA HÍBRIDA: Arquivo vs Serial Único
+    if [ -f "$INPUT" ]; then
+        # É um arquivo: Caminho normal
+        export P_FILE="$INPUT"
+        export P_MODE="FILE"
+        echo "--- 📦 Modo Arquivo: Lendo seriais de '$INPUT'..."
+    else
+        # Não é arquivo: Assume que é um Serial Único
+        export P_SERIAL="$INPUT"
+        export P_MODE="SINGLE"
+        echo "--- 🎯 Modo Único: Migrando serial '$INPUT'..."
+    fi
+
+    # Python agora decide se lê do arquivo ou usa a variável direta
     PAYLOAD=$(python3 -c "
 import os, json, sys
+
+mode = os.environ['P_MODE']
+target = os.environ['P_TARGET']
+serials = []
+
 try:
-    with open(os.environ['P_FILE'], 'r') as f: serials = [l.strip() for l in f if l.strip()]
-    if not serials: print('EMPTY'); sys.exit(0)
-    data = {'data': {'type': 'orgDeviceActivities', 'attributes': {'activityType': 'ASSIGN_DEVICES'}, 'relationships': {'mdmServer': {'data': {'type': 'mdmServers', 'id': os.environ['P_TARGET']}}, 'devices': {'data': [{'type': 'orgDevices', 'id': s} for s in serials]}}}}
+    if mode == 'FILE':
+        with open(os.environ['P_FILE'], 'r') as f:
+            serials = [l.strip() for l in f if l.strip()]
+    else:
+        # Modo Single: Lista com um único item
+        serials = [os.environ['P_SERIAL']]
+
+    if not serials:
+        print('EMPTY')
+        sys.exit(0)
+
+    # Monta o JSON padrão da Apple
+    data = {
+        'data': {
+            'type': 'orgDeviceActivities',
+            'attributes': {
+                'activityType': 'ASSIGN_DEVICES'
+            },
+            'relationships': {
+                'mdmServer': {
+                    'data': {
+                        'type': 'mdmServers',
+                        'id': target
+                    }
+                },
+                'devices': {
+                    'data': [{'type': 'orgDevices', 'id': s} for s in serials]
+                }
+            }
+        }
+    }
     print(json.dumps(data))
-except: print('ERROR')
+except Exception as e:
+    print('ERROR')
 ")
+
     if [ "$PAYLOAD" == "EMPTY" ]; then
-        echo "Arquivo vazio."
+        echo "❌ Erro: Nenhum serial válido encontrado."
+        exit 1
+    elif [ "$PAYLOAD" == "ERROR" ]; then
+        echo "❌ Erro interno ao gerar JSON."
         exit 1
     fi
 
-    echo "--- 🚀 Migrando dispositivos..."
+    # Envia para a Apple
+    echo "--- 🚀 Enviando requisição para a Apple..."
     curl -s -X POST "https://api-business.apple.com/v1/orgDeviceActivities" \
-        -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" -d "$PAYLOAD" |
-        python3 -c "import sys, json; d=json.load(sys.stdin); print('✅ SUCESSO!' if 'data' in d else f'❌ FALHA: {d}')"
+        -H "Authorization: Bearer $ACCESS_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "$PAYLOAD" |
+        python3 -c "import sys, json; d=json.load(sys.stdin); print('✅ SUCESSO! Migração concluída.' if 'data' in d else f'❌ FALHA: {d}')"
+
     exit 0
 fi
