@@ -29,7 +29,7 @@ Ao contrário da interface web do ABM, que pode ser lenta para grandes volumes, 
 
 ### 1. Clone o repositório
 ```bash
-git clone [https://github.com/SEU_USUARIO/abm-migrator.git](https://github.com/SEU_USUARIO/abm-migrator.git)
+git clone [https://github.com/dnsantos/abm-migrator](https://github.com/dnsantos/abm-migrator)
 cd abm-migrator
 
 ```
