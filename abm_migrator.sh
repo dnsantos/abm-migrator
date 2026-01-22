@@ -53,11 +53,12 @@ show_help() {
     echo "=============================================================================="
     echo "Uso: $0 [MODO] [ARGUMENTOS...]"
     echo ""
-    echo "  check [SERIAL]               Consulta status e MDM atual do dispositivo."
+    echo "  check [SERIAL/ARQUIVO]       Consulta status e MDM atual."
     echo "  list                         Lista servidores MDM e seus IDs."
-    echo "  batch [ARQUIVO] [ID_MDM]     Migra uma LISTA (.txt) para o MDM de destino."
-    echo "  batch [SERIAL] [ID_MDM]      Migra um SERIAL ÚNICO para o MDM de destino."
-    echo "  help                         Exibe esta ajuda."
+    echo "  assign [FONTE] [ID_MDM]      Atribui dispositivo(s) ao MDM de destino."
+    echo "  release [FONTE] [ID_MDM]     ⚠️  REMOVE dispositivos do servidor MDM."
+    echo ""
+    echo "  * [FONTE] pode ser um Serial Único ou um Arquivo .txt"
     echo "=============================================================================="
 }
 
@@ -125,38 +126,81 @@ fi
 # LÓGICA
 # ==============================================================================
 
+# --- CHECK (VERSÃO BLINDADA COM SHLEX) ---
 if [ "$MODE" == "check" ]; then
     if [ -z "$INPUT" ]; then
-        echo -e "${RED}Informe o serial.${NC}"
+        echo -e "${RED}Informe o serial ou arquivo .txt${NC}"
         exit 1
     fi
 
-    echo "--- 🔍 Consultando: $INPUT ---"
-    DEVICE_JSON=$(curl -s -X GET "https://api-business.apple.com/v1/orgDevices/$INPUT" \
-        -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json")
+    if [ -f "$INPUT" ]; then
+        echo "--- 📂 Modo Arquivo: Lendo seriais de '$INPUT' ---"
+        SERIAL_LIST=$(grep -vE "^\s*$" "$INPUT")
+    else
+        SERIAL_LIST="$INPUT"
+    fi
 
-    eval $(echo "$DEVICE_JSON" | python3 -c "
-import sys, json
+    for CURRENT_SERIAL in $SERIAL_LIST; do
+        CURRENT_SERIAL=$(echo "$CURRENT_SERIAL" | xargs)
+        [ -z "$CURRENT_SERIAL" ] && continue
+
+        echo ""
+        echo ">>> 🔍 Consultando: $CURRENT_SERIAL"
+
+        DEVICE_JSON=$(curl -s -X GET "https://api-business.apple.com/v1/orgDevices/$CURRENT_SERIAL" \
+            -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json")
+
+        # Limpa variáveis antes de processar
+        DEVICE_MODEL=""
+        DEVICE_STATUS=""
+        SERVER_URL=""
+        API_ERROR=""
+
+        # Python apenas define VARIÁVEIS, não roda comandos ECHO (Muito mais seguro)
+        eval $(echo "$DEVICE_JSON" | python3 -c "
+import sys, json, shlex
+
 try:
     raw = json.load(sys.stdin)
     if 'errors' in raw:
-        print('echo \"❌ Dispositivo não encontrado (404)\";')
-        sys.exit(0)
-    data = raw.get('data', {})
-    attrs = data.get('attributes', {})
-    rels = data.get('relationships', {})
-    print(f'echo \"✅ Modelo: {attrs.get(\"deviceModel\")}\";')
-    print(f'echo \"✅ Status: {attrs.get(\"status\")}\";')
-    if 'assignedServer' in rels:
-        print(f'SERVER_URL=\"{rels[\"assignedServer\"][\"links\"][\"related\"]}\"')
+        err = raw['errors'][0]
+        code = str(err.get('code', 'Unknown'))
+        title = str(err.get('title', 'Error'))
+        print(f'API_ERROR={shlex.quote(code + \" - \" + title)}')
     else:
-        print('echo \"⚠️  Sem MDM atribuído.\";')
-except: pass
+        data = raw.get('data', {})
+        attrs = data.get('attributes', {})
+        rels = data.get('relationships', {})
+        
+        # shlex.quote blinda a string para o bash (trata aspas, espaços, etc)
+        print(f'DEVICE_MODEL={shlex.quote(str(attrs.get(\"deviceModel\", \"N/A\")))}')
+        print(f'DEVICE_STATUS={shlex.quote(str(attrs.get(\"status\", \"N/A\")))}')
+        
+        if 'assignedServer' in rels:
+            link = rels['assignedServer']['links']['related']
+            print(f'SERVER_URL={shlex.quote(link)}')
+
+except Exception as e:
+    print(f'API_ERROR={shlex.quote(\"Erro JSON: \" + str(e))}')
 ")
-    if [ ! -z "$SERVER_URL" ]; then
-        SERVER_JSON=$(curl -s -X GET "$SERVER_URL" -H "Authorization: Bearer $ACCESS_TOKEN")
-        echo "$SERVER_JSON" | python3 -c "import sys, json; print(f'✅ MDM: {json.load(sys.stdin)[\"data\"][\"attributes\"][\"serverName\"]}')"
-    fi
+
+        # Agora o Bash decide o que mostrar baseado nas variáveis que o Python preencheu
+        if [ ! -z "$API_ERROR" ]; then
+            echo -e "❌ Erro API: $API_ERROR"
+        else
+            echo -e "✅ Modelo: $DEVICE_MODEL"
+            echo -e "✅ Status: $DEVICE_STATUS"
+
+            if [ ! -z "$SERVER_URL" ]; then
+                SERVER_JSON=$(curl -s -X GET "$SERVER_URL" -H "Authorization: Bearer $ACCESS_TOKEN")
+                # Extração simples do nome do servidor
+                MDM_NAME=$(echo "$SERVER_JSON" | python3 -c "import sys, json; print(json.load(sys.stdin).get('data',{}).get('attributes',{}).get('serverName','Desconhecido'))")
+                echo -e "✅ MDM: $MDM_NAME"
+            else
+                echo -e "⚠️  Sem MDM atribuído."
+            fi
+        fi
+    done
     exit 0
 fi
 
@@ -167,10 +211,10 @@ if [ "$MODE" == "list" ]; then
     exit 0
 fi
 
-if [ "$MODE" == "batch" ]; then
+if [ "$MODE" == "assign" ]; then
     # Valida se os argumentos foram passados
     if [ -z "$INPUT" ] || [ -z "$TARGET_ARG" ]; then
-        echo -e "${RED}Uso: $0 batch [ARQUIVO_OU_SERIAL] [ID_MDM]${NC}"
+        echo -e "${RED}Uso: $0 assign [ARQUIVO_OU_SERIAL] [ID_MDM]${NC}"
         exit 1
     fi
 
@@ -249,6 +293,99 @@ except Exception as e:
         -H "Content-Type: application/json" \
         -d "$PAYLOAD" |
         python3 -c "import sys, json; d=json.load(sys.stdin); print('✅ SUCESSO! Migração concluída.' if 'data' in d else f'❌ FALHA: {d}')"
+
+    exit 0
+fi
+
+# --- RELEASE / UNASSIGN (REMOVER VÍNCULO DO ABM) ---
+if [ "$MODE" == "release" ]; then
+    # Valida se os argumentos foram passados (Agora exige o TARGET_ARG)
+    if [ -z "$INPUT" ] || [ -z "$TARGET_ARG" ]; then
+        echo -e "${RED}Uso: $0 release [ARQUIVO_OU_SERIAL] [ID_MDM_ATUAL]${NC}"
+        echo "ℹ️  A Apple exige o ID do servidor atual para confirmar a remoção."
+        exit 1
+    fi
+
+    export P_TARGET="$TARGET_ARG"
+
+    if [ -f "$INPUT" ]; then
+        export P_FILE="$INPUT"
+        export P_MODE="FILE"
+        COUNT=$(grep -cve '^\s*$' "$INPUT")
+        MSG="Você está prestes a DESVINCULAR $COUNT dispositivos do servidor ($TARGET_ARG)."
+    else
+        export P_SERIAL="$INPUT"
+        export P_MODE="SINGLE"
+        MSG="Você está prestes a DESVINCULAR o serial $INPUT do servidor ($TARGET_ARG)."
+    fi
+
+    # --- TRAVA DE SEGURANÇA ---
+    echo -e "${RED}⚠️  ATENÇÃO: O dispositivo ficará como 'Unassigned' no ABM.${NC}"
+    echo "$MSG"
+    echo "Isso impede que o dispositivo faça o Enrollment automático no Jamf."
+    read -p "Confirma a desvinculação? (y/N): " CONFIRM
+    if [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]]; then
+        echo "Operação cancelada."
+        exit 0
+    fi
+    # --------------------------
+
+    PAYLOAD=$(python3 -c "
+import os, json, sys
+
+mode = os.environ['P_MODE']
+target = os.environ['P_TARGET']
+serials = []
+
+try:
+    if mode == 'FILE':
+        with open(os.environ['P_FILE'], 'r') as f:
+            serials = [l.strip() for l in f if l.strip()]
+    else:
+        serials = [os.environ['P_SERIAL']]
+
+    if not serials:
+        print('EMPTY')
+        sys.exit(0)
+
+    data = {
+        'data': {
+            'type': 'orgDeviceActivities',
+            'attributes': {
+                'activityType': 'UNASSIGN_DEVICES' 
+            },
+            'relationships': {
+                'mdmServer': {
+                    'data': {
+                        'type': 'mdmServers',
+                        'id': target # Apple exige o ID de origem aqui
+                    }
+                },
+                'devices': {
+                    'data': [{'type': 'orgDevices', 'id': s} for s in serials]
+                }
+            }
+        }
+    }
+    print(json.dumps(data))
+except: print('ERROR')
+")
+
+    if [ "$PAYLOAD" == "EMPTY" ]; then
+        echo "Erro: Nenhum serial válido."
+        exit 1
+    fi
+    if [ "$PAYLOAD" == "ERROR" ]; then
+        echo "Erro interno JSON."
+        exit 1
+    fi
+
+    echo "--- 🗑️  Enviando comando de UNASSIGN para a Apple..."
+    curl -s -X POST "https://api-business.apple.com/v1/orgDeviceActivities" \
+        -H "Authorization: Bearer $ACCESS_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "$PAYLOAD" |
+        python3 -c "import sys, json; d=json.load(sys.stdin); print('✅ SUCESSO! Dispositivos desvinculados (Unassigned).' if 'data' in d else f'❌ FALHA: {d}')"
 
     exit 0
 fi

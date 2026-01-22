@@ -12,7 +12,7 @@ Ao contrário da interface web do ABM, que pode ser lenta para grandes volumes, 
 
 * **🔍 Check Device:** Consulta o status de um serial, retornando o Modelo, Status (Added/Removed) e o Servidor MDM atual.
 * **📋 List Servers:** Lista todos os servidores MDM cadastrados na organização e exibe seus UUIDs.
-* **📦 Batch Migration:** Lê uma lista de seriais (`.txt`) e move todos os dispositivos para um servidor MDM de destino em uma única requisição.
+* **📦 Assign Migration:** Lê uma lista de seriais (`.txt`) e move todos os dispositivos para um servidor MDM de destino em uma única requisição.
 * **🔐 Secure:** As credenciais e chaves privadas permanecem locais e nunca são compartilhadas.
 
 ---
@@ -105,12 +105,12 @@ Verifique onde um dispositivo está atrelado antes de movê-lo.
 
 ```
 
-### 3. Migração em Lote (Batch)
+### 3. Migração em Lote (Assign)
 
 Crie um arquivo de texto (ex: `ipads_novos.txt`) com um Serial Number por linha. Depois, execute:
 
 ```bash
-./abm_migrator.sh batch ipads_novos.txt 422079C2-8231-4113-8E53-XXXXXXXXXXXX
+./abm_migrator.sh assign ipads_novos.txt 422079C2-8231-4113-8E53-XXXXXXXXXXXX
 
 ```
 
