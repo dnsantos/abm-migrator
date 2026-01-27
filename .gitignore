@@ -8,3 +8,6 @@ config.env
 .DS_Store
 __pycache__/
 *.pyc
+
+# Ignorar logs de migração em  massa
+bulk_migration.txt
